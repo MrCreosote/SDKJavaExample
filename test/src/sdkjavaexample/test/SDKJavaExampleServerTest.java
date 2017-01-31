@@ -2,9 +2,12 @@ package sdkjavaexample.test;
 
 import java.io.File;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import junit.framework.Assert;
@@ -14,6 +17,9 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import assemblyutil.AssemblyUtilClient;
+import assemblyutil.FastaAssemblyFile;
+import assemblyutil.SaveAssemblyParams;
 import sdkjavaexample.FilterContigsParams;
 import sdkjavaexample.FilterContigsResults;
 import sdkjavaexample.SDKJavaExampleServer;
@@ -21,11 +27,10 @@ import us.kbase.auth.AuthToken;
 import us.kbase.auth.AuthService;
 import us.kbase.common.service.JsonServerSyslog;
 import us.kbase.common.service.RpcContext;
+import us.kbase.common.service.ServerException;
 import us.kbase.common.service.UObject;
 import us.kbase.workspace.CreateWorkspaceParams;
-import us.kbase.workspace.ObjectSaveData;
 import us.kbase.workspace.ProvenanceAction;
-import us.kbase.workspace.SaveObjectsParams;
 import us.kbase.workspace.WorkspaceClient;
 import us.kbase.workspace.WorkspaceIdentity;
 
@@ -35,6 +40,8 @@ public class SDKJavaExampleServerTest {
     private static WorkspaceClient wsClient = null;
     private static String wsName = null;
     private static SDKJavaExampleServer impl = null;
+    private static Path scratch;
+    private static URL callbackURL;
     
     @BeforeClass
     public static void init() throws Exception {
@@ -45,10 +52,13 @@ public class SDKJavaExampleServerTest {
         Ini ini = new Ini(deploy);
         config = ini.get("SDKJavaExample");
         wsClient = new WorkspaceClient(new URL(config.get("workspace-url")), token);
-        wsClient.setAuthAllowedForHttp(true);
+        wsClient.setIsInsecureHttpConnectionAllowed(true); // do we need this?
+        callbackURL = new URL(System.getenv("SDK_CALLBACK_URL"));
+        scratch = Paths.get(config.get("scratch"));
         // These lines are necessary because we don't want to start linux syslog bridge service
         JsonServerSyslog.setStaticUseSyslog(false);
-        JsonServerSyslog.setStaticMlogFile(new File(config.get("scratch"), "test.log").getAbsolutePath());
+        JsonServerSyslog.setStaticMlogFile(new File(config.get("scratch"), "test.log")
+                .getAbsolutePath());
         impl = new SDKJavaExampleServer();
     }
     
@@ -79,60 +89,80 @@ public class SDKJavaExampleServerTest {
         }
     }
     
+    private String loadFASTA(
+            final Path filename,
+            final String objectName,
+            final String filecontents)
+            throws Exception {
+        Files.write(filename, filecontents.getBytes(StandardCharsets.UTF_8));
+        final AssemblyUtilClient assyUtil = new AssemblyUtilClient(callbackURL, token);
+        /* since the callback server is plain http need this line.
+         * CBS is on the same machine as the docker container
+         */
+        assyUtil.setIsInsecureHttpConnectionAllowed(true);
+        return assyUtil.saveAssemblyFromFasta(new SaveAssemblyParams()
+                .withAssemblyName(objectName)
+                .withWorkspaceName(getWsName())
+                .withFile(new FastaAssemblyFile().withPath(filename.toString())));
+        
+    }
+    
     @Test
     public void testFilterContigsOk() throws Exception {
-        String objName = "contigset.1";
-        Map<String, Object> contig1 = new LinkedHashMap<String, Object>();
-        contig1.put("id", "1");
-        contig1.put("length", 10);
-        contig1.put("md5", "md5");
-        contig1.put("sequence", "agcttttcat");
-        Map<String, Object> contig2 = new LinkedHashMap<String, Object>();
-        contig2.put("id", "2");
-        contig2.put("length", 5);
-        contig2.put("md5", "md5");
-        contig2.put("sequence", "agctt");
-        Map<String, Object> contig3 = new LinkedHashMap<String, Object>();
-        contig3.put("id", "3");
-        contig3.put("length", 12);
-        contig3.put("md5", "md5");
-        contig3.put("sequence", "agcttttcatgg");
-        Map<String, Object> obj = new LinkedHashMap<String, Object>();
-        obj.put("contigs", Arrays.asList(contig1, contig2, contig3));
-        obj.put("id", "id");
-        obj.put("md5", "md5");
-        obj.put("name", "name");
-        obj.put("source", "source");
-        obj.put("source_id", "source_id");
-        obj.put("type", "type");
-        wsClient.saveObjects(new SaveObjectsParams().withWorkspace(getWsName()).withObjects(Arrays.asList(
-                new ObjectSaveData().withType("KBaseGenomes.ContigSet").withName(objName).withData(new UObject(obj)))));
-        FilterContigsResults ret = impl.filterContigs(new FilterContigsParams().withWorkspace(getWsName())
-                .withContigsetId(objName).withMinLength(10L), token, getContext());
-        //Assert.assertEquals(1L, (long)ret.getContigCount());
+        // First load a test FASTA file as an KBase Assembly
+        final String fastaContent = ">seq1 something something asdf\n" +
+                                    "agcttttcat\n" +
+                                    ">seq2\n" +
+                                    "agctt\n" +
+                                    ">seq3\n" +
+                                    "agcttttcatgg";
+        
+        final String ref = loadFASTA(scratch.resolve("test1.fasta"), "TestAssembly", fastaContent);
+        
+        // second, call the implementation
+        final FilterContigsResults ret = impl.filterContigs(new FilterContigsParams()
+                .withWorkspaceName(getWsName())
+                .withAssemblyInputRef(ref)
+                .withMinLength(10L),
+                token, getContext());
+        
+        // validate the returned data
         Assert.assertEquals(3L, (long)ret.getNInitialContigs());
         Assert.assertEquals(1L, (long)ret.getNContigsRemoved());
         Assert.assertEquals(2L, (long)ret.getNContigsRemaining());
+    }
+    
+    @Test
+    public void test_filter_contigs_err1() throws Exception {
         try {
-            impl.filterContigs(new FilterContigsParams().withWorkspace(getWsName())
-                .withContigsetId(objName), token, getContext());
+            impl.filterContigs(new FilterContigsParams().withWorkspaceName(getWsName())
+                .withAssemblyInputRef("fake/fake/1"), token, getContext());
             Assert.fail("Error is expected above");
-        } catch (Exception ex) {
-            Assert.assertEquals("Parameter min_length is not set in input arguments", ex.getMessage());
+        } catch (IllegalArgumentException ex) {
+            Assert.assertEquals("Parameter min_length is not set in input arguments",
+                    ex.getMessage());
         }
+    }
+    
+    @Test
+    public void test_filter_contigs_err2() throws Exception {
         try {
-            impl.filterContigs(new FilterContigsParams().withWorkspace(getWsName())
-                .withContigsetId(objName).withMinLength(-10L), token, getContext());
+            impl.filterContigs(new FilterContigsParams().withWorkspaceName(getWsName())
+                .withAssemblyInputRef("fake/fake/1").withMinLength(-10L), token, getContext());
             Assert.fail("Error is expected above");
-        } catch (Exception ex) {
-            Assert.assertEquals("min_length parameter shouldn't be negative (-10)", ex.getMessage());
+        } catch (IllegalArgumentException ex) {
+            Assert.assertEquals("min_length parameter cannot be negative (-10)", ex.getMessage());
         }
+    }
+    
+    @Test
+    public void test_filter_contigs_err3() throws Exception {
         try {
-            impl.filterContigs(new FilterContigsParams().withWorkspace(getWsName())
-                .withContigsetId("fake").withMinLength(10L), token, getContext());
+            impl.filterContigs(new FilterContigsParams().withWorkspaceName(getWsName())
+                .withAssemblyInputRef("fake").withMinLength(10L), token, getContext());
             Assert.fail("Error is expected above");
-        } catch (Exception ex) {
-            Assert.assertEquals("Error loading original ContigSet object from workspace", ex.getMessage());
+        } catch (ServerException ex) {
+            Assert.assertEquals("Invalid workspace reference string! Found fake", ex.getMessage());
         }
     }
 }

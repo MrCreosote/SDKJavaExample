@@ -8,6 +8,10 @@ MAINTAINER KBase Developer
 
 # RUN apt-get update
 
+# download a fasta reader/writer
+RUN cd /kb/deployment/lib/jars \
+    && wget https://downloads.sourceforge.net/project/jfasta/releases/jfasta-2.2.0/jfasta-2.2.0-jar-with-dependencies.jar
+
 # -----------------------------------------
 
 COPY ./ /kb/module
