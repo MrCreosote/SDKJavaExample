@@ -2,10 +2,6 @@ package sdkjavaexample.test;
 
 import java.io.File;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Map;
@@ -17,11 +13,16 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import assemblyutil.AssemblyUtilClient;
 import assemblyutil.FastaAssemblyFile;
 import assemblyutil.SaveAssemblyParams;
 import sdkjavaexample.FilterContigsParams;
 import sdkjavaexample.FilterContigsResults;
+
 import sdkjavaexample.SDKJavaExampleServer;
 import us.kbase.auth.AuthToken;
 import us.kbase.auth.AuthService;
